@@ -1,0 +1,272 @@
+name: Build Number Keys mod
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: setup jdk
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'microsoft'
+
+      - name: prepare project from the official Fabric template (1.21.11)
+        run: |
+          git clone --depth 1 -b 1.21.11 https://github.com/FabricMC/fabric-example-mod mod
+          cd mod
+          rm -rf src .github
+          sed -i 's/modid/numkeys/g' build.gradle settings.gradle
+          sed -i '/withSourcesJar/d' build.gradle
+          chmod +x gradlew
+
+      - name: write mod sources
+        working-directory: mod
+        run: |
+          mkdir -p "$(dirname 'src/client/java/com/numkeys/NumKeysClient.java')"
+          cat > 'src/client/java/com/numkeys/NumKeysClient.java' <<'EOF_FILE'
+          package com.numkeys;
+
+          import net.fabricmc.api.ClientModInitializer;
+          import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
+          import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+          import net.minecraft.client.gui.screens.ChatScreen;
+          import net.minecraft.resources.Identifier;
+
+          public class NumKeysClient implements ClientModInitializer {
+          	@Override
+          	public void onInitializeClient() {
+          		Config.load();
+
+          		// Panel with keys 1-0, drawn as part of the in-game HUD.
+          		HudElementRegistry.addLast(
+          			Identifier.fromNamespaceAndPath("numkeys", "keys"),
+          			(graphics, tickCounter) -> Panel.render(graphics)
+          		);
+
+          		// While the chat is open: drag with LMB, change theme with RMB.
+          		ScreenEvents.AFTER_INIT.register((client, screen, scaledWidth, scaledHeight) -> {
+          			if (screen instanceof ChatScreen) {
+          				ScreenEvents.afterRender(screen).register(
+          					(s, graphics, mouseX, mouseY, tickDelta) -> Panel.chatOverlay(graphics, mouseX, mouseY)
+          				);
+          			}
+          		});
+          	}
+          }
+          EOF_FILE
+          mkdir -p "$(dirname 'src/client/java/com/numkeys/Theme.java')"
+          cat > 'src/client/java/com/numkeys/Theme.java' <<'EOF_FILE'
+          package com.numkeys;
+
+          record Theme(String name, int bgUp, int bgDown, int text, int textDown, int border) {
+          	static final Theme[] ALL = {
+          		new Theme("Dark",  0x99000000, 0xFFFFFFFF, 0xFFFFFFFF, 0xFF000000, 0xFF555555),
+          		new Theme("Light", 0x99FFFFFF, 0xFF222222, 0xFF222222, 0xFFFFFFFF, 0xFFCCCCCC),
+          		new Theme("Neon",  0xAA10102A, 0xFF00E5FF, 0xFF00E5FF, 0xFF10102A, 0xFF00E5FF),
+          		new Theme("Red",   0xAA2A0000, 0xFFFF3B30, 0xFFFF6B60, 0xFF2A0000, 0xFFFF3B30),
+          		new Theme("Green", 0xAA002A10, 0xFF34D058, 0xFF5CE07A, 0xFF002A10, 0xFF34D058)
+          	};
+
+          	static Theme get(int index) {
+          		return ALL[Math.floorMod(index, ALL.length)];
+          	}
+          }
+          EOF_FILE
+          mkdir -p "$(dirname 'src/client/java/com/numkeys/Config.java')"
+          cat > 'src/client/java/com/numkeys/Config.java' <<'EOF_FILE'
+          package com.numkeys;
+
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.util.Properties;
+
+          import net.fabricmc.loader.api.FabricLoader;
+
+          final class Config {
+          	static int x = 10;
+          	static int y = 10;
+          	static int theme = 0;
+
+          	private static Path file() {
+          		return FabricLoader.getInstance().getConfigDir().resolve("numkeys.properties");
+          	}
+
+          	static void load() {
+          		try {
+          			Path path = file();
+          			if (!Files.exists(path)) return;
+          			Properties props = new Properties();
+          			try (InputStream in = Files.newInputStream(path)) {
+          				props.load(in);
+          			}
+          			x = Integer.parseInt(props.getProperty("x", "10"));
+          			y = Integer.parseInt(props.getProperty("y", "10"));
+          			theme = Integer.parseInt(props.getProperty("theme", "0"));
+          		} catch (Exception ignored) {
+          			// Broken config: keep defaults.
+          		}
+          	}
+
+          	static void save() {
+          		try {
+          			Properties props = new Properties();
+          			props.setProperty("x", Integer.toString(x));
+          			props.setProperty("y", Integer.toString(y));
+          			props.setProperty("theme", Integer.toString(theme));
+          			try (OutputStream out = Files.newOutputStream(file())) {
+          				props.store(out, "Number keys HUD");
+          			}
+          		} catch (Exception ignored) {
+          			// Not critical.
+          		}
+          	}
+          }
+          EOF_FILE
+          mkdir -p "$(dirname 'src/client/java/com/numkeys/Panel.java')"
+          cat > 'src/client/java/com/numkeys/Panel.java' <<'EOF_FILE'
+          package com.numkeys;
+
+          import org.lwjgl.glfw.GLFW;
+
+          import net.minecraft.client.Minecraft;
+          import net.minecraft.client.gui.Font;
+          import net.minecraft.client.gui.GuiGraphics;
+
+          final class Panel {
+          	static final int KEY = 18;
+          	static final int GAP = 2;
+          	static final int W = 10 * KEY + 9 * GAP;
+          	static final int H = KEY;
+
+          	private static final String[] LABELS = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"};
+          	private static final int[] KEYS = {
+          		GLFW.GLFW_KEY_1, GLFW.GLFW_KEY_2, GLFW.GLFW_KEY_3, GLFW.GLFW_KEY_4, GLFW.GLFW_KEY_5,
+          		GLFW.GLFW_KEY_6, GLFW.GLFW_KEY_7, GLFW.GLFW_KEY_8, GLFW.GLFW_KEY_9, GLFW.GLFW_KEY_0
+          	};
+
+          	private static boolean dragging;
+          	private static int dragDx;
+          	private static int dragDy;
+          	private static boolean prevLeft;
+          	private static boolean prevRight;
+
+          	private Panel() {}
+
+          	private static void clamp(GuiGraphics g) {
+          		Config.x = Math.max(0, Math.min(Config.x, g.guiWidth() - W));
+          		Config.y = Math.max(0, Math.min(Config.y, g.guiHeight() - H));
+          	}
+
+          	private static void outline(GuiGraphics g, int x, int y, int w, int h, int color) {
+          		g.fill(x, y, x + w, y + 1, color);
+          		g.fill(x, y + h - 1, x + w, y + h, color);
+          		g.fill(x, y, x + 1, y + h, color);
+          		g.fill(x + w - 1, y, x + w, y + h, color);
+          	}
+
+          	/** Draws the keys. Keys light up only while no screen is open. */
+          	static void render(GuiGraphics g) {
+          		Minecraft mc = Minecraft.getInstance();
+          		Font font = mc.font;
+          		clamp(g);
+          		Theme t = Theme.get(Config.theme);
+          		long window = GLFW.glfwGetCurrentContext();
+          		boolean live = window != 0L && mc.screen == null;
+
+          		for (int i = 0; i < KEYS.length; i++) {
+          			boolean down = live && GLFW.glfwGetKey(window, KEYS[i]) == GLFW.GLFW_PRESS;
+          			int x = Config.x + i * (KEY + GAP);
+          			int y = Config.y;
+          			g.fill(x, y, x + KEY, y + KEY, down ? t.bgDown() : t.bgUp());
+          			outline(g, x, y, KEY, KEY, t.border());
+          			String label = LABELS[i];
+          			g.drawString(font, label, x + (KEY - font.width(label)) / 2, y + (KEY - 8) / 2, down ? t.textDown() : t.text());
+          		}
+          	}
+
+          	/** Called every frame while the chat screen is open. */
+          	static void chatOverlay(GuiGraphics g, int mouseX, int mouseY) {
+          		Minecraft mc = Minecraft.getInstance();
+          		long window = GLFW.glfwGetCurrentContext();
+          		if (window == 0L) return;
+
+          		boolean left = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
+          		boolean right = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_RIGHT) == GLFW.GLFW_PRESS;
+          		boolean hover = mouseX >= Config.x && mouseX < Config.x + W && mouseY >= Config.y && mouseY < Config.y + H;
+
+          		// Right click on the panel: next theme.
+          		if (right && !prevRight && hover) {
+          			Config.theme = (Config.theme + 1) % Theme.ALL.length;
+          			Config.save();
+          		}
+
+          		// Left button: drag the panel.
+          		if (left && !prevLeft && hover) {
+          			dragging = true;
+          			dragDx = mouseX - Config.x;
+          			dragDy = mouseY - Config.y;
+          		}
+          		if (dragging) {
+          			if (left) {
+          				Config.x = mouseX - dragDx;
+          				Config.y = mouseY - dragDy;
+          				clamp(g);
+          			} else {
+          				dragging = false;
+          				Config.save();
+          			}
+          		}
+          		prevLeft = left;
+          		prevRight = right;
+
+          		int frame = (hover || dragging) ? 0xFFFFD84D : 0xFFFFFFFF;
+          		outline(g, Config.x - 2, Config.y - 2, W + 4, H + 4, frame);
+
+          		String hint = "Drag: LMB | Theme: RMB (" + Theme.get(Config.theme).name() + ")";
+          		int hintY = Config.y >= 14 ? Config.y - 13 : Config.y + H + 5;
+          		g.drawString(mc.font, hint, Config.x, hintY, 0xFFFFFFFF);
+          	}
+          }
+          EOF_FILE
+          mkdir -p "$(dirname 'src/main/resources/fabric.mod.json')"
+          cat > 'src/main/resources/fabric.mod.json' <<'EOF_FILE'
+          {
+          	"schemaVersion": 1,
+          	"id": "numkeys",
+          	"version": "${version}",
+          	"name": "Number Keys HUD",
+          	"description": "Shows keys 1-0 on screen. Drag the panel in chat with the left mouse button, change the theme with the right one.",
+          	"authors": [
+          		"Me"
+          	],
+          	"license": "CC0-1.0",
+          	"environment": "client",
+          	"entrypoints": {
+          		"client": [
+          			"com.numkeys.NumKeysClient"
+          		]
+          	},
+          	"depends": {
+          		"fabricloader": ">=0.20.1",
+          		"minecraft": "~1.21.11",
+          		"java": ">=21",
+          		"fabric-api": "*"
+          	}
+          }
+          EOF_FILE
+
+      - name: build
+        working-directory: mod
+        run: ./gradlew build
+
+      - name: upload jar
+        uses: actions/upload-artifact@v7
+        with:
+          name: numkeys-mod-1.21.11
+          path: mod/build/libs/*.jar
